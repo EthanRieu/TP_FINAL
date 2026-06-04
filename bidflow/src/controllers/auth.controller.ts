@@ -38,6 +38,8 @@ const login = wrap(async (req: Request, res: Response) => {
   const ok = await user.comparePassword(password);
   if (!ok) throw new ApiError(401, 'Identifiants invalides');
 
+  if (!user.isActive) throw new ApiError(403, 'Compte suspendu');
+
   const token = jwt.sign(
     { userId: user._id, roles: user.roles },
     process.env.JWT_SECRET!,

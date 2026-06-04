@@ -18,7 +18,7 @@ export function createApp() {
   app.use('/api/auth', authRoutes);
   app.use('/api/products', productRoutes);
   app.use('/api/auctions', auctionRoutes);
-  app.use('/api/bids', bidRoutes);
+  app.use('/api/auctions', bidRoutes);
   app.use('/api/admin', adminRoutes);
 
   // Error handler global

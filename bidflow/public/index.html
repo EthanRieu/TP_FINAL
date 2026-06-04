@@ -1,0 +1,741 @@
+<!DOCTYPE html>
+<html lang="fr">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BidFlow</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="/socket.io/socket.io.js"></script>
+</head>
+<body class="bg-gray-950 text-gray-100 min-h-screen font-sans">
+
+<!-- NAV -->
+<nav class="bg-gray-900 border-b border-gray-800 px-6 py-3 flex items-center justify-between">
+  <span class="text-xl font-bold text-indigo-400 cursor-pointer" onclick="navigate('products')">BidFlow</span>
+  <div class="flex gap-4 items-center text-sm" id="nav-links">
+    <button onclick="navigate('products')" class="hover:text-indigo-400 transition">Enchères</button>
+    <span id="nav-seller" class="hidden">
+      <button onclick="navigate('seller')" class="hover:text-indigo-400 transition">Mes produits</button>
+    </span>
+    <span id="nav-admin" class="hidden">
+      <button onclick="navigate('admin')" class="hover:text-indigo-400 transition">Admin</button>
+    </span>
+    <span id="nav-profile" class="hidden">
+      <button onclick="navigate('profile')" class="text-indigo-300 hover:text-indigo-100 transition" id="nav-username">Profil</button>
+    </span>
+    <button id="btn-logout" onclick="logout()" class="hidden text-red-400 hover:text-red-300 transition">Déconnexion</button>
+    <button id="btn-login" onclick="navigate('login')" class="bg-indigo-600 hover:bg-indigo-500 px-3 py-1 rounded transition">Connexion</button>
+  </div>
+</nav>
+
+<!-- MAIN -->
+<main class="max-w-5xl mx-auto px-4 py-8" id="main"></main>
+
+<script>
+// ─── STATE ────────────────────────────────────────────────────────────────────
+
+const API = '/api';
+let token = localStorage.getItem('token');
+let user  = (() => { try { return JSON.parse(localStorage.getItem('user') || 'null'); } catch { localStorage.removeItem('user'); return null; } })();
+let socket = null;
+
+function parseJwt(t) {
+  try {
+    return JSON.parse(atob(t.split('.')[1].replace(/-/g, '+').replace(/_/g, '/')));
+  } catch { return null; }
+}
+
+// ─── ROUTER ───────────────────────────────────────────────────────────────────
+
+function navigate(page, params = {}) {
+  const pages = { login, profile, products, productDetail, seller, admin };
+  if (pages[page]) pages[page](params);
+}
+
+// ─── UTILS ────────────────────────────────────────────────────────────────────
+
+async function api(method, path, body) {
+  const opts = {
+    method,
+    headers: { 'Content-Type': 'application/json', ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+  };
+  if (body) opts.body = JSON.stringify(body);
+  const res = await fetch(API + path, opts);
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw { status: res.status, ...data };
+  return data;
+}
+
+function render(html) {
+  document.getElementById('main').innerHTML = html;
+}
+
+function toast(msg, err = false) {
+  const t = document.createElement('div');
+  t.className = `fixed bottom-4 right-4 px-4 py-2 rounded shadow-lg text-sm z-50 ${err ? 'bg-red-700' : 'bg-green-700'}`;
+  t.textContent = msg;
+  document.body.appendChild(t);
+  setTimeout(() => t.remove(), 3500);
+}
+
+function hasRole(r) { return user?.roles?.includes(r); }
+
+function badge(role) {
+  const map = { buyer: 'bg-blue-700', seller: 'bg-emerald-700', moderator: 'bg-purple-700' };
+  return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${map[role] || 'bg-gray-700'}">${role}</span>`;
+}
+
+function timeLeft(endAt) {
+  const diff = new Date(endAt) - Date.now();
+  if (diff <= 0) return 'Terminée';
+  const s = Math.floor(diff / 1000);
+  const m = Math.floor(s / 60);
+  const h = Math.floor(m / 60);
+  if (h > 0) return `${h}h ${m % 60}m`;
+  if (m > 0) return `${m}m ${s % 60}s`;
+  return `${s}s`;
+}
+
+function statusBadge(status) {
+  const map = {
+    active: 'bg-green-700 text-green-100',
+    settled: 'bg-blue-700 text-blue-100',
+    closed: 'bg-gray-600 text-gray-200',
+    cancelled: 'bg-red-800 text-red-100',
+    draft: 'bg-yellow-700 text-yellow-100',
+    scheduled: 'bg-orange-700 text-orange-100',
+  };
+  return `<span class="px-2 py-0.5 rounded text-xs font-semibold ${map[status] || 'bg-gray-700'}">${status}</span>`;
+}
+
+// ─── NAV UPDATE ───────────────────────────────────────────────────────────────
+
+function updateNav() {
+  document.getElementById('btn-login').classList.toggle('hidden', !!token);
+  document.getElementById('btn-logout').classList.toggle('hidden', !token);
+  document.getElementById('nav-profile').classList.toggle('hidden', !token);
+  document.getElementById('nav-seller').classList.toggle('hidden', !hasRole('seller'));
+  document.getElementById('nav-admin').classList.toggle('hidden', !hasRole('moderator'));
+  if (user) document.getElementById('nav-username').textContent = user.email?.split('@')[0] || 'Profil';
+}
+
+// ─── AUTH ─────────────────────────────────────────────────────────────────────
+
+function login() {
+  render(`
+    <div class="max-w-sm mx-auto mt-16 bg-gray-900 rounded-xl p-8 border border-gray-800">
+      <h2 class="text-2xl font-bold mb-6 text-center">Connexion</h2>
+      <div id="login-err" class="hidden mb-4 text-red-400 text-sm text-center"></div>
+      <input id="l-email" type="email" placeholder="Email" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-3 focus:outline-none focus:border-indigo-500" />
+      <input id="l-pass" type="password" placeholder="Mot de passe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-5 focus:outline-none focus:border-indigo-500" />
+      <button onclick="doLogin()" class="w-full bg-indigo-600 hover:bg-indigo-500 rounded py-2 font-semibold transition">Se connecter</button>
+      <p class="text-center text-sm text-gray-400 mt-4">Pas de compte ? <button onclick="navigate('register')" class="text-indigo-400 hover:underline">S'inscrire</button></p>
+    </div>
+  `);
+}
+
+// Expose register page inline
+function register() {
+  render(`
+    <div class="max-w-sm mx-auto mt-16 bg-gray-900 rounded-xl p-8 border border-gray-800">
+      <h2 class="text-2xl font-bold mb-6 text-center">Inscription</h2>
+      <div id="reg-err" class="hidden mb-4 text-red-400 text-sm text-center"></div>
+      <input id="r-email" type="email" placeholder="Email" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-3 focus:outline-none focus:border-indigo-500" />
+      <input id="r-pass" type="password" placeholder="Mot de passe" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-5 focus:outline-none focus:border-indigo-500" />
+      <button onclick="doRegister()" class="w-full bg-indigo-600 hover:bg-indigo-500 rounded py-2 font-semibold transition">Créer un compte</button>
+      <p class="text-center text-sm text-gray-400 mt-4">Déjà un compte ? <button onclick="navigate('login')" class="text-indigo-400 hover:underline">Se connecter</button></p>
+    </div>
+  `);
+}
+
+async function doLogin() {
+  const email = document.getElementById('l-email').value;
+  const password = document.getElementById('l-pass').value;
+  try {
+    const data = await api('POST', '/auth/login', { email, password });
+    token = data.token;
+    const payload = parseJwt(token);
+    user = { _id: payload.userId, email, roles: payload.roles };
+    localStorage.setItem('token', token);
+    localStorage.setItem('user', JSON.stringify(user));
+    updateNav();
+    navigate('products');
+    toast('Connecté !');
+  } catch (e) {
+    document.getElementById('login-err').textContent = e.message || 'Erreur de connexion';
+    document.getElementById('login-err').classList.remove('hidden');
+  }
+}
+
+async function doRegister() {
+  const email = document.getElementById('r-email').value;
+  const password = document.getElementById('r-pass').value;
+  try {
+    await api('POST', '/auth/register', { email, password });
+    toast('Compte créé ! Connectez-vous.');
+    navigate('login');
+  } catch (e) {
+    document.getElementById('reg-err').textContent = e.message || 'Erreur';
+    document.getElementById('reg-err').classList.remove('hidden');
+  }
+}
+
+function logout() {
+  token = null; user = null;
+  localStorage.removeItem('token');
+  localStorage.removeItem('user');
+  updateNav();
+  navigate('products');
+  toast('Déconnecté');
+}
+
+// ─── PROFILE ──────────────────────────────────────────────────────────────────
+
+function profile() {
+  if (!user) { navigate('login'); return; }
+  render(`
+    <div class="max-w-sm mx-auto mt-16 bg-gray-900 rounded-xl p-8 border border-gray-800">
+      <h2 class="text-2xl font-bold mb-4">Mon profil</h2>
+      <p class="text-gray-400 mb-2">${user.email}</p>
+      <div class="flex gap-2 mb-6">${(user.roles || []).map(badge).join('')}</div>
+      ${!hasRole('seller') ? `
+        <button onclick="upgradeToSeller()" class="w-full bg-emerald-700 hover:bg-emerald-600 rounded py-2 font-semibold transition text-sm">
+          Devenir vendeur
+        </button>
+        <p id="seller-req-msg" class="hidden mt-2 text-sm text-yellow-400 text-center">Demande en cours…</p>
+      ` : ''}
+    </div>
+  `);
+}
+
+async function upgradeToSeller() {
+  try {
+    const data = await api('POST', '/auth/upgrade-seller');
+    user = data.user || user;
+    localStorage.setItem('user', JSON.stringify(user));
+    updateNav();
+    profile();
+    toast('Demande envoyée !');
+  } catch (e) {
+    toast(e.message || 'Erreur', true);
+  }
+}
+
+// ─── PRODUCTS LIST ────────────────────────────────────────────────────────────
+
+async function products() {
+  render(`<div class="text-center py-16 text-gray-500">Chargement…</div>`);
+  try {
+    const data = await api('GET', '/auctions?status=active');
+    const items = Array.isArray(data) ? data : data.auctions || [];
+
+    render(`
+      <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-bold">Enchères en cours</h1>
+        <div class="flex gap-2">
+          <button onclick="loadAuctions('active')" class="text-sm px-3 py-1 rounded bg-green-800 hover:bg-green-700 transition">Actives</button>
+          <button onclick="loadAuctions('')" class="text-sm px-3 py-1 rounded bg-gray-700 hover:bg-gray-600 transition">Toutes</button>
+        </div>
+      </div>
+      <div id="auction-grid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+        ${renderAuctionCards(items)}
+      </div>
+    `);
+  } catch (e) {
+    render(`<div class="text-center py-16 text-red-400">Erreur de chargement</div>`);
+  }
+}
+
+async function loadAuctions(status) {
+  const qs = status ? `?status=${status}` : '';
+  try {
+    const data = await api('GET', `/auctions${qs}`);
+    const items = Array.isArray(data) ? data : data.auctions || [];
+    document.getElementById('auction-grid').innerHTML = renderAuctionCards(items);
+  } catch {}
+}
+
+function renderAuctionCards(items) {
+  if (!items.length) return `<div class="col-span-3 text-center py-12 text-gray-500">Aucune enchère</div>`;
+  return items.map(a => `
+    <div onclick="productDetail({id:'${a._id}'})" class="bg-gray-900 border border-gray-800 rounded-xl p-5 cursor-pointer hover:border-indigo-600 transition group">
+      ${a.product?.photos?.[0]
+        ? `<img src="/${a.product.photos[0]}" class="w-full h-32 object-cover rounded mb-3" />`
+        : `<div class="w-full h-32 bg-gray-800 rounded mb-3 flex items-center justify-center text-gray-600 text-4xl">🏷️</div>`
+      }
+      <div class="flex justify-between items-start mb-1">
+        <h3 class="font-semibold text-sm truncate group-hover:text-indigo-300">${a.product?.title || 'Produit'}</h3>
+        ${statusBadge(a.status)}
+      </div>
+      <p class="text-indigo-400 font-bold text-lg mt-1">${a.currentPrice?.toFixed(2)} €</p>
+      <p class="text-gray-500 text-xs mt-1">${a.status === 'active' ? '⏱ ' + timeLeft(a.endAt) : ''}</p>
+    </div>
+  `).join('');
+}
+
+// ─── PRODUCT DETAIL ───────────────────────────────────────────────────────────
+
+let bidInterval = null;
+
+async function productDetail({ id }) {
+  if (bidInterval) { clearInterval(bidInterval); bidInterval = null; }
+  disconnectSocket();
+
+  render(`<div class="text-center py-16 text-gray-500">Chargement…</div>`);
+
+  try {
+    const [auction, bids] = await Promise.all([
+      api('GET', `/auctions/${id}`),
+      api('GET', `/auctions/${id}/bids`).catch(() => []),
+    ]);
+
+    renderAuctionDetail(auction, bids);
+    connectSocket(id);
+
+    // Countdown live
+    if (auction.status === 'active') {
+      bidInterval = setInterval(() => {
+        const el = document.getElementById('countdown');
+        if (el) el.textContent = timeLeft(auction.endAt);
+      }, 1000);
+    }
+  } catch (e) {
+    render(`<div class="text-center py-16 text-red-400">Erreur : ${e.message || 'Enchère introuvable'}</div>`);
+  }
+}
+
+function renderAuctionDetail(auction, bids) {
+  const prod = auction.product || {};
+  const canBid = token && hasRole('buyer') && auction.status === 'active' && auction.seller?._id !== user?._id && auction.seller !== user?._id;
+  const isSeller = token && (auction.seller?._id === user?._id || auction.seller === user?._id);
+
+  document.getElementById('main').innerHTML = `
+    <button onclick="navigate('products')" class="text-sm text-gray-400 hover:text-gray-200 mb-4 flex items-center gap-1">← Retour</button>
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+
+      <!-- LEFT -->
+      <div>
+        ${prod.photos?.[0]
+          ? `<img src="/${prod.photos[0]}" class="w-full rounded-xl mb-4 object-cover max-h-72" />`
+          : `<div class="w-full h-48 bg-gray-800 rounded-xl mb-4 flex items-center justify-center text-gray-600 text-6xl">🏷️</div>`
+        }
+        <h1 class="text-2xl font-bold mb-1">${prod.title || 'Produit'}</h1>
+        <p class="text-gray-400 text-sm mb-3">${prod.description || ''}</p>
+        <div class="flex gap-2 text-xs text-gray-500">
+          <span class="bg-gray-800 px-2 py-1 rounded">${prod.category || ''}</span>
+          <span class="bg-gray-800 px-2 py-1 rounded">${prod.condition || ''}</span>
+        </div>
+      </div>
+
+      <!-- RIGHT -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-6 flex flex-col gap-4">
+        <div class="flex justify-between items-center">
+          <span class="text-gray-400 text-sm">Statut</span>
+          ${statusBadge(auction.status)}
+        </div>
+        <div>
+          <p class="text-gray-400 text-sm">Prix actuel</p>
+          <p class="text-3xl font-bold text-indigo-400" id="current-price">${auction.currentPrice?.toFixed(2)} €</p>
+        </div>
+        ${auction.status === 'active' ? `
+          <div>
+            <p class="text-gray-400 text-sm">Temps restant</p>
+            <p class="text-xl font-mono text-yellow-400" id="countdown">${timeLeft(auction.endAt)}</p>
+          </div>
+        ` : ''}
+        ${auction.winner ? `<p class="text-green-400 text-sm font-semibold">Gagnant : ${auction.winner?.email || auction.winner}</p>` : ''}
+
+        ${canBid ? `
+          <div id="bid-form">
+            <input id="bid-amount" type="number" step="0.01" placeholder="Montant (€)"
+              class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500" />
+            <div id="bid-err" class="hidden text-red-400 text-xs mb-2"></div>
+            <button onclick="placeBid('${auction._id}')" class="w-full bg-indigo-600 hover:bg-indigo-500 rounded py-2 font-semibold transition">Miser</button>
+            <div id="bid-confirm" class="hidden mt-2">
+              <p class="text-yellow-400 text-xs mb-2">Mise > 10× le prix. Confirmer ?</p>
+              <button onclick="placeBid('${auction._id}', true)" class="w-full bg-yellow-600 hover:bg-yellow-500 rounded py-1 text-sm font-semibold transition">Confirmer</button>
+            </div>
+          </div>
+        ` : ''}
+
+        ${isSeller && ['scheduled','draft'].includes(auction.status) ? `
+          <button onclick="startAuction('${auction._id}')" class="w-full bg-green-700 hover:bg-green-600 rounded py-2 font-semibold transition text-sm">Démarrer l'enchère</button>
+        ` : ''}
+        ${(isSeller || hasRole('moderator')) && ['active','scheduled','draft'].includes(auction.status) ? `
+          <button onclick="cancelAuction('${auction._id}')" class="w-full bg-red-800 hover:bg-red-700 rounded py-2 font-semibold transition text-sm">Annuler</button>
+        ` : ''}
+
+        <!-- Socket.io live feed -->
+        <div id="socket-feed" class="text-xs text-gray-500 border-t border-gray-800 pt-3 space-y-1 max-h-16 overflow-y-auto"></div>
+      </div>
+    </div>
+
+    <!-- BIDS -->
+    <div class="mt-8">
+      <h2 class="text-lg font-semibold mb-3">Historique des mises</h2>
+      <div id="bid-list" class="space-y-2">
+        ${renderBidList(bids)}
+      </div>
+    </div>
+  `;
+}
+
+function renderBidList(bids) {
+  if (!bids.length) return `<p class="text-gray-500 text-sm">Aucune mise pour l'instant.</p>`;
+  return [...bids].reverse().map(b => `
+    <div class="flex justify-between items-center bg-gray-900 border border-gray-800 rounded px-4 py-2 text-sm">
+      <span class="text-gray-300">${b.bidder?.email || b.bidder || '—'}</span>
+      <div class="flex items-center gap-2">
+        ${b.isAuto ? '<span class="text-xs text-gray-500 bg-gray-800 px-1 rounded">auto</span>' : ''}
+        <span class="text-indigo-400 font-semibold">${b.amount?.toFixed(2)} €</span>
+        <span class="text-gray-600 text-xs">${new Date(b.createdAt).toLocaleTimeString()}</span>
+      </div>
+    </div>
+  `).join('');
+}
+
+async function placeBid(auctionId, confirmed = false) {
+  const amount = parseFloat(document.getElementById('bid-amount').value);
+  const errEl  = document.getElementById('bid-err');
+  const confirmEl = document.getElementById('bid-confirm');
+
+  errEl.classList.add('hidden');
+  confirmEl.classList.add('hidden');
+
+  if (!amount || amount <= 0) { errEl.textContent = 'Montant invalide'; errEl.classList.remove('hidden'); return; }
+
+  try {
+    await api('POST', `/auctions/${auctionId}/bids`, { amount, ...(confirmed ? { confirmed: true } : {}) });
+    document.getElementById('bid-amount').value = '';
+    toast('Mise placée !');
+  } catch (e) {
+    if (e.requireConfirmation) {
+      confirmEl.classList.remove('hidden');
+    } else {
+      errEl.textContent = e.message || 'Erreur';
+      errEl.classList.remove('hidden');
+    }
+  }
+}
+
+async function startAuction(id) {
+  try {
+    await api('POST', `/auctions/${id}/start`);
+    toast('Enchère démarrée !');
+    productDetail({ id });
+  } catch (e) { toast(e.message || 'Erreur', true); }
+}
+
+async function cancelAuction(id) {
+  const reason = prompt('Raison de l\'annulation ?');
+  if (reason === null) return;
+  try {
+    await api('POST', `/auctions/${id}/cancel`, { reason: reason || 'Annulée' });
+    toast('Enchère annulée');
+    navigate('products');
+  } catch (e) { toast(e.message || 'Erreur', true); }
+}
+
+// ─── SOCKET.IO ────────────────────────────────────────────────────────────────
+
+function connectSocket(auctionId) {
+  if (socket) socket.disconnect();
+  socket = io({ auth: token ? { token } : {} });
+
+  socket.emit('watch', auctionId);
+
+  socket.on('bid_placed', ({ amount, bidderId }) => {
+    const el = document.getElementById('current-price');
+    if (el) el.textContent = parseFloat(amount).toFixed(2) + ' €';
+    addFeed(`Nouvelle mise : ${parseFloat(amount).toFixed(2)} €`);
+    // Refresh bid list
+    api('GET', `/auctions/${auctionId}/bids`).then(bids => {
+      const list = document.getElementById('bid-list');
+      if (list) list.innerHTML = renderBidList(bids);
+    }).catch(() => {});
+  });
+
+  socket.on('auction_extended', ({ newEndAt, extensionCount }) => {
+    addFeed(`⏰ Anti-sniping ! Enchère prolongée de 60s (x${extensionCount})`);
+    // Update countdown reference
+    const el = document.getElementById('countdown');
+    if (el) {
+      if (bidInterval) clearInterval(bidInterval);
+      bidInterval = setInterval(() => {
+        if (el) el.textContent = timeLeft(newEndAt);
+      }, 1000);
+    }
+  });
+
+  socket.on('auction_closed', ({ winner, finalPrice, reserveMet }) => {
+    addFeed(winner ? `Gagnant : ${finalPrice?.toFixed(2)} €` : 'Enchère clôturée sans gagnant');
+    toast(winner ? `Enchère terminée — ${finalPrice?.toFixed(2)} €` : 'Enchère terminée sans gagnant');
+  });
+}
+
+function disconnectSocket() {
+  if (socket) { socket.disconnect(); socket = null; }
+}
+
+function addFeed(msg) {
+  const feed = document.getElementById('socket-feed');
+  if (!feed) return;
+  const line = document.createElement('p');
+  line.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  feed.prepend(line);
+}
+
+// ─── SELLER ───────────────────────────────────────────────────────────────────
+
+async function seller() {
+  if (!hasRole('seller')) { toast('Accès refusé', true); return; }
+  render(`<div class="text-center py-8 text-gray-500">Chargement…</div>`);
+
+  try {
+    const data = await api('GET', '/products');
+    const all = Array.isArray(data) ? data : data.products || [];
+    const items = all.filter(p => p.seller?._id === user?._id || p.seller === user?._id);
+
+    render(`
+      <div class="flex justify-between items-center mb-6">
+        <h1 class="text-2xl font-bold">Mes produits</h1>
+        <button onclick="showCreateProduct()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded font-semibold text-sm transition">+ Nouveau produit</button>
+      </div>
+      <div id="seller-form" class="hidden mb-8 bg-gray-900 border border-gray-800 rounded-xl p-6"></div>
+      <div class="space-y-3" id="product-list">
+        ${renderSellerProducts(items)}
+      </div>
+    `);
+  } catch (e) {
+    render(`<div class="text-center py-16 text-red-400">Erreur</div>`);
+  }
+}
+
+function renderSellerProducts(items) {
+  if (!items.length) return `<p class="text-gray-500">Aucun produit. Créez-en un !</p>`;
+  return items.map(p => `
+    <div class="bg-gray-900 border border-gray-800 rounded-xl p-4 flex justify-between items-start">
+      <div>
+        <p class="font-semibold">${p.title}</p>
+        <p class="text-sm text-gray-400">${p.category} · ${p.condition}</p>
+        ${statusBadge(p.status)}
+      </div>
+      <div class="flex gap-2">
+        ${p.status === 'draft' ? `<button onclick="showCreateAuction('${p._id}')" class="text-sm bg-green-800 hover:bg-green-700 px-3 py-1 rounded transition">Créer enchère</button>` : ''}
+      </div>
+    </div>
+  `).join('');
+}
+
+function showCreateProduct() {
+  const el = document.getElementById('seller-form');
+  el.classList.remove('hidden');
+  el.innerHTML = `
+    <h2 class="text-lg font-semibold mb-4">Nouveau produit</h2>
+    <input id="p-title" placeholder="Titre" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500" />
+    <textarea id="p-desc" placeholder="Description" rows="3" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500"></textarea>
+    <input id="p-cat" placeholder="Catégorie (ex: Art)" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500" />
+    <select id="p-cond" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-4 focus:outline-none">
+      <option value="new">Neuf</option>
+      <option value="like_new">Comme neuf</option>
+      <option value="good">Bon état</option>
+      <option value="fair">État correct</option>
+      <option value="poor">Usé</option>
+    </select>
+    <div id="cp-err" class="hidden text-red-400 text-sm mb-2"></div>
+    <button onclick="createProduct()" class="bg-indigo-600 hover:bg-indigo-500 px-4 py-2 rounded font-semibold text-sm transition">Créer</button>
+    <button onclick="document.getElementById('seller-form').classList.add('hidden')" class="ml-2 text-sm text-gray-400 hover:text-gray-200">Annuler</button>
+  `;
+}
+
+async function createProduct() {
+  const body = {
+    title:       document.getElementById('p-title').value,
+    description: document.getElementById('p-desc').value,
+    category:    document.getElementById('p-cat').value,
+    condition:   document.getElementById('p-cond').value,
+  };
+  try {
+    await api('POST', '/products', body);
+    toast('Produit créé !');
+    seller();
+  } catch (e) {
+    const el = document.getElementById('cp-err');
+    el.textContent = e.message || 'Erreur';
+    el.classList.remove('hidden');
+  }
+}
+
+function showCreateAuction(productId) {
+  const el = document.getElementById('seller-form');
+  el.classList.remove('hidden');
+  const now = new Date();
+  const inOneHour = new Date(now.getTime() + 60 * 60 * 1000);
+  const fmt = d => {
+    const pad = n => String(n).padStart(2, '0');
+    return `${d.getFullYear()}-${pad(d.getMonth()+1)}-${pad(d.getDate())}T${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  };
+
+  el.innerHTML = `
+    <h2 class="text-lg font-semibold mb-4">Créer une enchère</h2>
+    <label class="text-sm text-gray-400 block mb-1">Prix de départ (€)</label>
+    <input id="a-start" type="number" step="0.01" value="1" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500" />
+    <label class="text-sm text-gray-400 block mb-1">Prix de réserve (€, optionnel)</label>
+    <input id="a-reserve" type="number" step="0.01" placeholder="Laisser vide si aucun" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500" />
+    <label class="text-sm text-gray-400 block mb-1">Début</label>
+    <input id="a-start-at" type="datetime-local" value="${fmt(now)}" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-2 focus:outline-none focus:border-indigo-500" />
+    <label class="text-sm text-gray-400 block mb-1">Fin</label>
+    <input id="a-end-at" type="datetime-local" value="${fmt(inOneHour)}" class="w-full bg-gray-800 border border-gray-700 rounded px-3 py-2 mb-4 focus:outline-none focus:border-indigo-500" />
+    <div id="ca-err" class="hidden text-red-400 text-sm mb-2"></div>
+    <button onclick="createAuction('${productId}')" class="bg-green-700 hover:bg-green-600 px-4 py-2 rounded font-semibold text-sm transition">Créer l'enchère</button>
+    <button onclick="document.getElementById('seller-form').classList.add('hidden')" class="ml-2 text-sm text-gray-400 hover:text-gray-200">Annuler</button>
+  `;
+}
+
+async function createAuction(productId) {
+  const startPrice = parseFloat(document.getElementById('a-start').value);
+  const reserveRaw = document.getElementById('a-reserve').value;
+  const startAt    = new Date(document.getElementById('a-start-at').value).toISOString();
+  const endAt      = new Date(document.getElementById('a-end-at').value).toISOString();
+  const body = { productId, startPrice, startAt, endAt };
+  if (reserveRaw) body.reservePrice = parseFloat(reserveRaw);
+
+  try {
+    const auction = await api('POST', '/auctions', body);
+    toast('Enchère créée !');
+    productDetail({ id: auction._id });
+  } catch (e) {
+    const el = document.getElementById('ca-err');
+    el.textContent = e.message || 'Erreur';
+    el.classList.remove('hidden');
+  }
+}
+
+// ─── ADMIN ────────────────────────────────────────────────────────────────────
+
+async function admin() {
+  if (!hasRole('moderator')) { toast('Accès refusé', true); return; }
+  render(`<div class="text-center py-8 text-gray-500">Chargement…</div>`);
+
+  try {
+    const [reports, requests, allUsers] = await Promise.all([
+      api('GET', '/admin/reports'),
+      api('GET', '/admin/seller-requests'),
+      api('GET', '/admin/users'),
+    ]);
+
+    render(`
+      <h1 class="text-2xl font-bold mb-6">Administration</h1>
+
+      <!-- REPORTS -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4 mb-8">
+        ${(reports.byStatus || []).map(s => `
+          <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+            ${statusBadge(s._id)}
+            <p class="text-2xl font-bold mt-2">${s.count}</p>
+          </div>
+        `).join('')}
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+          <p class="text-xs text-gray-400">Taux de conversion</p>
+          <p class="text-2xl font-bold mt-2">${reports.conversion ? (reports.conversion.rate * 100).toFixed(1) + '%' : '—'}</p>
+        </div>
+        <div class="bg-gray-900 border border-gray-800 rounded-xl p-4">
+          <p class="text-xs text-gray-400">Commission 30j</p>
+          <p class="text-2xl font-bold mt-2 text-indigo-400">${reports.commission ? reports.commission.total?.toFixed(2) + ' €' : '—'}</p>
+        </div>
+      </div>
+
+      <!-- TOP SELLERS -->
+      ${reports.topSellers?.length ? `
+        <div class="mb-8">
+          <h2 class="text-lg font-semibold mb-3">Top vendeurs</h2>
+          <div class="space-y-2">
+            ${reports.topSellers.map((s, i) => `
+              <div class="flex justify-between bg-gray-900 border border-gray-800 rounded px-4 py-2 text-sm">
+                <span class="text-gray-300">${i + 1}. ${s.email}</span>
+                <span class="text-indigo-400 font-semibold">${s.revenue?.toFixed(2)} €</span>
+              </div>
+            `).join('')}
+          </div>
+        </div>
+      ` : ''}
+
+      <!-- SELLER REQUESTS -->
+      <div class="mb-8">
+        <h2 class="text-lg font-semibold mb-3">Demandes vendeur</h2>
+        <div class="space-y-2" id="seller-requests">
+          ${renderSellerRequests(Array.isArray(requests) ? requests : requests.requests || [])}
+        </div>
+      </div>
+
+      <!-- USERS LIST -->
+      <div class="bg-gray-900 border border-gray-800 rounded-xl p-5">
+        <h2 class="text-lg font-semibold mb-3">Utilisateurs</h2>
+        <div class="space-y-2">
+          ${(Array.isArray(allUsers) ? allUsers : []).map(u => `
+            <div class="flex justify-between items-center bg-gray-800 rounded px-4 py-2 text-sm">
+              <div>
+                <span class="text-gray-200">${u.email}</span>
+                <span class="ml-2 text-gray-500 text-xs">${(u.roles || []).join(', ')}</span>
+              </div>
+              <div class="flex gap-2 items-center">
+                <span class="text-xs px-2 py-0.5 rounded ${u.isActive === false ? 'bg-red-900 text-red-300' : 'bg-emerald-900 text-emerald-300'}">${u.isActive === false ? 'suspendu' : 'actif'}</span>
+                ${u.isActive === false
+                  ? `<button onclick="activateUser('${u._id}')" class="bg-green-800 hover:bg-green-700 px-2 py-1 rounded text-xs transition">Réactiver</button>`
+                  : `<button onclick="suspendUser('${u._id}')" class="bg-red-800 hover:bg-red-700 px-2 py-1 rounded text-xs transition">Suspendre</button>`
+                }
+              </div>
+            </div>
+          `).join('') || '<p class="text-gray-500 text-sm">Aucun utilisateur.</p>'}
+        </div>
+      </div>
+    `);
+  } catch (e) {
+    render(`<div class="text-center py-16 text-red-400">Erreur admin</div>`);
+  }
+}
+
+function renderSellerRequests(requests) {
+  if (!requests.length) return `<p class="text-gray-500 text-sm">Aucune demande en attente.</p>`;
+  return requests.filter(r => r.sellerRequest?.status === 'pending').map(r => `
+    <div class="flex justify-between items-center bg-gray-900 border border-gray-800 rounded px-4 py-2 text-sm">
+      <span class="text-gray-300">${r.email}</span>
+      <div class="flex gap-2">
+        <button onclick="handleRequest('${r._id}', 'approve')" class="bg-green-800 hover:bg-green-700 px-2 py-1 rounded text-xs transition">Approuver</button>
+        <button onclick="handleRequest('${r._id}', 'reject')" class="bg-red-800 hover:bg-red-700 px-2 py-1 rounded text-xs transition">Refuser</button>
+      </div>
+    </div>
+  `).join('') || `<p class="text-gray-500 text-sm">Aucune demande en attente.</p>`;
+}
+
+async function handleRequest(userId, action) {
+  try {
+    await api('PATCH', `/admin/seller-requests/${userId}`, { action });
+    toast(action === 'approve' ? 'Approuvé !' : 'Refusé');
+    admin();
+  } catch (e) { toast(e.message || 'Erreur', true); }
+}
+
+async function suspendUser(id) {
+  try {
+    await api('PATCH', `/admin/users/${id}/suspend`);
+    toast('Utilisateur suspendu');
+    admin();
+  } catch (e) { toast(e.message || 'Erreur', true); }
+}
+
+async function activateUser(id) {
+  try {
+    await api('PATCH', `/admin/users/${id}/activate`);
+    toast('Utilisateur réactivé');
+    admin();
+  } catch (e) { toast(e.message || 'Erreur', true); }
+}
+
+// ─── BOOT ─────────────────────────────────────────────────────────────────────
+
+updateNav();
+navigate('products');
+</script>
+</body>
+</html>

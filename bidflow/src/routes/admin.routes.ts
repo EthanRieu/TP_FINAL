@@ -3,6 +3,7 @@ import { authenticate } from '../middleware/auth';
 import { requireRole } from '../middleware/requireRole';
 import {
   getReports,
+  listUsers,
   suspendUser,
   activateUser,
   suspendProduct,
@@ -16,6 +17,7 @@ const router = Router();
 router.use(authenticate, requireRole('moderator'));
 
 router.get('/reports',                    getReports);
+router.get('/users',                      listUsers);
 router.get('/seller-requests',            listSellerRequests);
 router.patch('/seller-requests/:id',      handleSellerRequest);
 router.patch('/users/:id/suspend',        suspendUser);

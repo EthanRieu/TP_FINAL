@@ -152,6 +152,13 @@ export const activateProduct = wrap(async (req: Request, res: Response) => {
 });
 
 
+// ── Users ─────────────────────────────────────────────────────────────────────
+
+export const listUsers = wrap(async (_req: Request, res: Response) => {
+  const users = await User.find().select('email roles isActive createdAt').sort({ createdAt: -1 });
+  res.json(users);
+});
+
 // ── Seller requests ───────────────────────────────────────────────────────────
 
 export const listSellerRequests = wrap(async (_req: Request, res: Response) => {
