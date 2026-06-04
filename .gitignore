@@ -1,2 +1,17 @@
 /BidFlow_Guide_Complet.md
 /Brief_Projet_Marketplace.pdf
+
+# env
+.env
+.env.*
+!.env.example
+
+# deps & build
+node_modules/
+dist/
+
+# uploads
+uploads/
+
+# OS
+.DS_Store
