@@ -1,0 +1,14 @@
+meta {
+  name: Get Seller Requests
+  type: http
+  seq: 2
+}
+
+get {
+  url: {{baseUrl}}/api/admin/seller-requests
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{moderatorToken}}
+}

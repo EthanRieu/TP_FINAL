@@ -1,0 +1,19 @@
+meta {
+  name: Suspend User
+  type: http
+  seq: 4
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/users/{{userId}}/suspend
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{moderatorToken}}
+}
+
+vars:pre-request {
+  userId: 6a218bdca0b487d2b9b2a5f7
+}

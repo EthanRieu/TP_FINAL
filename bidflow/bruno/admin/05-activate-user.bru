@@ -1,0 +1,19 @@
+meta {
+  name: Activate User
+  type: http
+  seq: 5
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/users/{{userId}}/activate
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{moderatorToken}}
+}
+
+vars:pre-request {
+  userId: 6a218bdca0b487d2b9b2a5f7
+}

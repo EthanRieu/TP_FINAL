@@ -1,0 +1,15 @@
+meta {
+  name: Upgrade Seller Request
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/auth/upgrade-seller
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sellerToken}}
+}

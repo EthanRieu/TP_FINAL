@@ -1,0 +1,21 @@
+meta {
+  name: Place Bid
+  type: http
+  seq: 6
+}
+
+post {
+  url: {{baseUrl}}/api/auctions/{{auctionId}}/bids
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{buyerToken}}
+}
+
+body:json {
+  {
+    "amount": 15
+  }
+}

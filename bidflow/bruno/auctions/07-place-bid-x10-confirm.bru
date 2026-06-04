@@ -1,0 +1,22 @@
+meta {
+  name: Place Bid x10 Confirmed (anti-fraude)
+  type: http
+  seq: 7
+}
+
+post {
+  url: {{baseUrl}}/api/auctions/{{auctionId}}/bids
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{buyerToken}}
+}
+
+body:json {
+  {
+    "amount": 9999,
+    "confirmed": true
+  }
+}

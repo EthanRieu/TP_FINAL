@@ -1,0 +1,14 @@
+meta {
+  name: Get Reports
+  type: http
+  seq: 1
+}
+
+get {
+  url: {{baseUrl}}/api/admin/reports
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{moderatorToken}}
+}

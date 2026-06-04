@@ -1,0 +1,25 @@
+meta {
+  name: Handle Seller Request
+  type: http
+  seq: 3
+}
+
+patch {
+  url: {{baseUrl}}/api/admin/seller-requests/{{userId}}
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{moderatorToken}}
+}
+
+body:json {
+  {
+    "action": "approve"
+  }
+}
+
+vars:pre-request {
+  userId: 6a218bdca0b487d2b9b2a5f7
+}

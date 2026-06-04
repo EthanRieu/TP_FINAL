@@ -1,0 +1,24 @@
+meta {
+  name: Create Product
+  type: http
+  seq: 1
+}
+
+post {
+  url: {{baseUrl}}/api/products
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sellerToken}}
+}
+
+body:json {
+  {
+    "title": "Montre vintage Seiko",
+    "description": "Belle montre automatique des années 70, en très bon état de fonctionnement.",
+    "category": "montres",
+    "condition": "good"
+  }
+}

@@ -1,0 +1,15 @@
+meta {
+  name: Start Auction
+  type: http
+  seq: 4
+}
+
+post {
+  url: {{baseUrl}}/api/auctions/{{auctionId}}/start
+  body: none
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sellerToken}}
+}

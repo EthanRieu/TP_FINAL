@@ -1,0 +1,21 @@
+meta {
+  name: Cancel Auction
+  type: http
+  seq: 5
+}
+
+post {
+  url: {{baseUrl}}/api/auctions/{{auctionId}}/cancel
+  body: json
+  auth: bearer
+}
+
+auth:bearer {
+  token: {{sellerToken}}
+}
+
+body:json {
+  {
+    "reason": "Test annulation"
+  }
+}
